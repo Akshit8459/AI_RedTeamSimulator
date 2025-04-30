@@ -1,6 +1,7 @@
 import hashlib
 import os
 import subprocess
+import re
 from mitre_loader import sample_techniques
 from database import get_failed_techniques, store_attack_result
 from exploit_fetcher import fetch_exploits_for_technique
@@ -65,45 +66,39 @@ else:
     print("✅ Ollama responded successfully.")
 
 # Step 5: Parse the AI response
-import re
-
 print("🔎 [DEBUG] Parsing AI response...\n")
 
-# Modify the regex to account for multiline PowerShell code
-matches = re.findall(
-    r'Technique ID:\s*(T\d+\.\d+)\s*Justification:\s*(.*?)\s*PowerShell:\s*(.*?)\s*Explanation:\s*(.*?)\n',
-    stdout, re.DOTALL
-)
+# Preprocess: remove technique name suffix (e.g., ": Distributed Component Object Model")
+stdout = re.sub(r'(Technique ID:\s*T\d+\.\d+):.*', r'\1', stdout)
 
-# Output the entire PowerShell section for debugging
+# Output the PowerShell section for debugging
 print("🧨 [DEBUG] Raw PowerShell Output:\n")
 raw_powershell = re.findall(r'PowerShell:\s*(.*?)\s*Explanation:', stdout, re.DOTALL)
 if raw_powershell:
-    print(raw_powershell[0])  # Output the raw PowerShell code for analysis
+    print(raw_powershell[0].strip())
+
+# More tolerant matching for response
+matches = re.findall(
+    r'Technique ID:\s*(T\d+\.\d+)\s*Justification:\s*(.*?)\s*PowerShell:\s*(.*?)\s*Explanation:\s*(.*)',
+    stdout,
+    re.DOTALL
+)
 
 if not matches:
     print("❌ [ERROR] Could not parse AI response.")
     print("Response was:", stdout)
     exit()
 
-
 # Step 6: Process each matched technique
 for match in matches:
-    technique_id, justification, powershell_code, explanation = match
-    technique_id = technique_id.strip()
-    justification = justification.strip()
-    powershell_code = powershell_code.strip()
-    explanation = explanation.strip()
+    technique_id, justification, powershell_code, explanation = map(str.strip, match)
 
-    # Handle unusually long or corrupted PowerShell content
-    if len(powershell_code) > 1000:  # Example threshold for overly long content
+    if len(powershell_code) > 1000:
         print(f"❌ [ERROR] PowerShell code is too long or possibly corrupted: {powershell_code[:100]}... (truncated)")
         powershell_code = "Obfuscated/Corrupted PowerShell Code"
 
-    # Find the full technique object to extract the name
     technique_name = next((t["name"] for t in filtered_techniques if t["id"] == technique_id), "Unknown")
 
-    # 🔍 Fetch exploits using Exploit-DB integration
     print(f"🧨 [DEBUG] Searching Exploit-DB for technique: {technique_name}")
     exploits = fetch_exploits_for_technique(technique_name)
 
@@ -115,7 +110,6 @@ for match in matches:
         justification += "\n\n[+] No related exploits found in Exploit-DB."
         exploit_info = "None"
 
-    # Hash the payload for uniqueness (SHA256)
     payload_hash = hashlib.sha256(powershell_code.encode()).hexdigest()
 
     print(f"\n✅ Selected Technique: {technique_id}")
@@ -123,7 +117,6 @@ for match in matches:
     print("📜 PowerShell Payload:")
     print(powershell_code)
 
-    # Dynamically generate filenames based on `technique_id`
     generated_payload_file = f"generated_attack_{technique_id}.ps1"
     technique_info_file = f"technique_info_{technique_id}.txt"
 
@@ -133,7 +126,6 @@ for match in matches:
     with open(technique_info_file, "w", encoding="utf-8") as f:
         f.write(f"{technique_id}\n{justification}\n{exploit_info}\n{explanation}")
 
-    # Store the attack result in the database (initial result = unknown)
     result = "unknown"
     store_attack_result(technique_id, payload_hash, justification, result, exploit_info)
 
